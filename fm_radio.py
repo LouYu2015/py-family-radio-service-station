@@ -7,7 +7,6 @@ from rtlsdr import RtlSdr
 import numpy as np
 import scipy.signal as signal
 import sounddevice as sd
-# from pynput import keyboard
 import config
 import gui
 
@@ -40,9 +39,8 @@ class Radio:
         self.N = round(self.f_sps*self.buffer_time)  # number of samples to collect per buffer
 
         # initialize multiprocessing processes
-        self.sample_process = SampleProcess(self.f_sps, self.f_c, self.N, sample_queue)
-        self.extraction_process = ExtractionProcess(self.f_sps, self.f_audiosps, sample_queue, audio_queues)
-        # self.exit_listener = keyboard.Listener(on_press=self.on_press)
+        self.sample_process = SampleProcess(exitFlag, self.f_sps, self.f_c, self.N, sample_queue)
+        self.extraction_process = ExtractionProcess(exitFlag, self.f_sps, self.f_audiosps, sample_queue, audio_queues)
 
         # initalize output audio stream
         self.stream = sd.OutputStream(samplerate=self.f_audiosps, blocksize=int(self.N / (self.f_sps / self.f_audiosps)), channels=1)
@@ -56,7 +54,7 @@ class Radio:
         self.extraction_process.start()
 
         self.current_channel = 0
-        self.ui = gui.GUI()
+        self.ui = gui.GUI(destroy_callback=self.cleanup)
         self.next_audio()
     
     def next_audio(self):
@@ -86,13 +84,15 @@ class Radio:
 
     def cleanup(self):
         time.sleep(self.buffer_time)  # wait to allow processes to finish
-        self.extraction_process.terminate()
+        exitFlag.set()
+        self.extraction_process.join()
         self.sample_process.terminate()
+        self.sample_process.join()
+        sample_queue.close()
+        for audio_queue in audio_queues:
+            audio_queue.close()
         self.stream.stop()
-        self.extraction_process.close()
-        self.sample_process.close()
         self.stream.close()
-        del self.output_queue  # must be deleted for clean exit
 
     # def on_press(self, key):
     #     if key == keyboard.Key.esc:
@@ -102,8 +102,9 @@ class Radio:
 
 # Process to sample radio using the sdr
 class SampleProcess(multiprocessing.Process):
-    def __init__(self, f_sps, f_c, buffer_length, sample_queue):
+    def __init__(self, exitFlag, f_sps, f_c, buffer_length, sample_queue):
         multiprocessing.Process.__init__(self)
+        self.exitFlag = exitFlag
         self.f_sps = f_sps
         self.f_c = f_c
         self.buffer_length = buffer_length
@@ -131,7 +132,8 @@ class SampleProcess(multiprocessing.Process):
 
 # Process to extract audio from the samples
 class ExtractionProcess(multiprocessing.Process):
-    def __init__(self, f_sps, f_audiosps, sample_queue, audio_queues):
+    def __init__(self, exitFlag, f_sps, f_audiosps, sample_queue, audio_queues):
+        self.exitFlag = exitFlag
         multiprocessing.Process.__init__(self)
         self.f_sps = f_sps
         self.f_audiosps = f_audiosps
@@ -142,8 +144,11 @@ class ExtractionProcess(multiprocessing.Process):
         self.audio_queues = audio_queues
 
     def run(self):
-        while not exitFlag.is_set():
-            samples = self.sample_queue.get(block=True)
+        while not self.exitFlag.is_set():
+            try:
+                samples = self.sample_queue.get(block=True, timeout=2 * config.BUFFER_TIME)
+            except queue.Empty:
+                continue
             filteredsignals = self.filter_samples(samples, self.f_sps)
             audios = [self.process_signal(filteredsignal, self.f_sps, self.f_audiosps)
                       for filteredsignal in filteredsignals]
@@ -151,7 +156,7 @@ class ExtractionProcess(multiprocessing.Process):
                 power = np.mean(np.abs(filteredsignal))
                 print(channel, power)
                 if power > 0.1:
-                    self.audio_queues[channel].put(audio)
+                    self.audio_queues[channel].put(audio, block=False)
 
     # returns filtered signal
     def filter_samples(self, samples, f_sps):
