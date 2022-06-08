@@ -59,6 +59,13 @@ class Radio:
     
     def next_audio(self):
         audio = None
+
+        for channel, audio_queue in enumerate(audio_queues):
+            if audio_queue.empty():
+                self.ui.set_channel_activity(channel, 'nothing')
+            else:
+                self.ui.set_channel_activity(channel, 'waiting')
+
         try:
             audio = audio_queues[self.current_channel].get(block=True, timeout=2 * config.BUFFER_TIME)
         except queue.Empty:
@@ -75,6 +82,7 @@ class Radio:
 
         # play audio and send to output queue if it's not full
         try:
+            self.ui.set_channel_activity(self.current_channel, 'active')
             self.output_queue.put(audio, block=False)
         except queue.Full:
             pass
@@ -154,7 +162,7 @@ class ExtractionProcess(multiprocessing.Process):
                       for filteredsignal in filteredsignals]
             for channel, (audio, filteredsignal) in enumerate(zip(audios, filteredsignals)):
                 power = np.mean(np.abs(filteredsignal))
-                print(channel, power)
+                # print(channel, power)
                 if power > 0.1:
                     self.audio_queues[channel].put(audio, block=False)
 
