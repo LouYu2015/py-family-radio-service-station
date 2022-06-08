@@ -54,22 +54,31 @@ class Radio:
         self.extraction_process.start()
 
         # audio playing in the main process
+        current_channel = 0
         while not exitFlag.is_set():
-            for audio_queue in audio_queues:
-                try:
-                    audio = audio_queue.get(block=False)
-                except queue.Empty:
+            audio = None
+            try:
+                audio = audio_queues[current_channel].get(block=True, timeout=2 * config.BUFFER_TIME)
+            except queue.Empty:
+                for channel, audio_queue in enumerate(audio_queues):
+                    try:
+                        audio = audio_queue.get(block=False)
+                        current_channel = channel
+                    except queue.Empty:
+                        pass
+                if audio is None:
+                    time.sleep(config.BUFFER_TIME / 2)
                     continue
-                audio = audio.astype(np.float32)
+            audio = audio.astype(np.float32)
 
-                # play audio and send to output queue if it's not full
-                try:
-                    self.output_queue.put(audio, block=False)
-                except queue.Full:
-                    pass
+            # play audio and send to output queue if it's not full
+            try:
+                self.output_queue.put(audio, block=False)
+                time.sleep(config.BUFFER_TIME)
+            except queue.Full:
+                pass
 
-                self.stream.write(config.VOLUME * audio)
-            time.sleep(config.BUFFER_TIME / 2)
+            self.stream.write(config.VOLUME * audio)
 
     def cleanup(self):
         time.sleep(self.buffer_time)  # wait to allow processes to finish
