@@ -7,8 +7,9 @@ from rtlsdr import RtlSdr
 import numpy as np
 import scipy.signal as signal
 import sounddevice as sd
-from pynput import keyboard
+# from pynput import keyboard
 import config
+import gui
 
 
 # Plays FM radio through the computer audio output.
@@ -29,6 +30,8 @@ audio_queues = [multiprocessing.Queue() for _ in config.CHANNELS]  # audio added
 #   # buffer time
 class Radio:
     def __init__(self, f_sps=1.0*256*256*16, f_audiosps=48000, f_c=config.CHANNELS[0], buffer_time=config.BUFFER_TIME):
+        self.ui = None
+
         # set up constants
         self.f_sps = f_sps  # sdr sampling frequency
         self.f_audiosps = f_audiosps  # audio sampling frequency (for output)
@@ -39,46 +42,47 @@ class Radio:
         # initialize multiprocessing processes
         self.sample_process = SampleProcess(self.f_sps, self.f_c, self.N, sample_queue)
         self.extraction_process = ExtractionProcess(self.f_sps, self.f_audiosps, sample_queue, audio_queues)
-        self.exit_listener = keyboard.Listener(on_press=self.on_press)
+        # self.exit_listener = keyboard.Listener(on_press=self.on_press)
 
         # initalize output audio stream
         self.stream = sd.OutputStream(samplerate=self.f_audiosps, blocksize=int(self.N / (self.f_sps / self.f_audiosps)), channels=1)
 
         self.output_queue = multiprocessing.Queue(25)  # for other programs to use audio samples. max size is 25 to avoid memory overuse if output is not being used.
-    
-    def run(self):
+
         print('\nInitialized. Starting streaming. Press <ESC> to exit.\n')
         self.stream.start()
-        self.exit_listener.start()
+        # self.exit_listener.start()
         self.sample_process.start()
         self.extraction_process.start()
 
-        # audio playing in the main process
-        current_channel = 0
-        while not exitFlag.is_set():
-            audio = None
-            try:
-                audio = audio_queues[current_channel].get(block=True, timeout=2 * config.BUFFER_TIME)
-            except queue.Empty:
-                for channel, audio_queue in enumerate(audio_queues):
-                    try:
-                        audio = audio_queue.get(block=False)
-                        current_channel = channel
-                    except queue.Empty:
-                        pass
-                if audio is None:
-                    time.sleep(config.BUFFER_TIME / 2)
-                    continue
-            audio = audio.astype(np.float32)
+        self.current_channel = 0
+        self.ui = gui.GUI()
+        self.next_audio()
+    
+    def next_audio(self):
+        audio = None
+        try:
+            audio = audio_queues[self.current_channel].get(block=True, timeout=2 * config.BUFFER_TIME)
+        except queue.Empty:
+            for channel, audio_queue in enumerate(audio_queues):
+                try:
+                    audio = audio_queue.get(block=False)
+                    self.current_channel = channel
+                except queue.Empty:
+                    pass
+            if audio is None:
+                self.ui.window.after(int(1000 * config.BUFFER_TIME / 2), self.next_audio)
+                return
+        audio = audio.astype(np.float32)
 
-            # play audio and send to output queue if it's not full
-            try:
-                self.output_queue.put(audio, block=False)
-                time.sleep(config.BUFFER_TIME)
-            except queue.Full:
-                pass
+        # play audio and send to output queue if it's not full
+        try:
+            self.output_queue.put(audio, block=False)
+        except queue.Full:
+            pass
 
-            self.stream.write(config.VOLUME * audio)
+        self.stream.write(config.VOLUME * audio)
+        self.ui.window.after(int(1000 * config.BUFFER_TIME), self.next_audio)
 
     def cleanup(self):
         time.sleep(self.buffer_time)  # wait to allow processes to finish
@@ -90,10 +94,10 @@ class Radio:
         self.stream.close()
         del self.output_queue  # must be deleted for clean exit
 
-    def on_press(self, key):
-        if key == keyboard.Key.esc:
-            exitFlag.set()
-            self.cleanup()
+    # def on_press(self, key):
+    #     if key == keyboard.Key.esc:
+    #         exitFlag.set()
+    #         self.cleanup()
 
 
 # Process to sample radio using the sdr
@@ -190,4 +194,4 @@ class ExtractionProcess(multiprocessing.Process):
 
 if __name__ == '__main__':
     r = Radio(buffer_time=config.BUFFER_TIME)
-    r.run()
+    r.ui.mainloop()
