@@ -4,10 +4,11 @@ import queue
 import time
 import faulthandler
 from rtlsdr import RtlSdr
-import numpy as  np
+import numpy as np
 import scipy.signal as signal
 import sounddevice as sd
 from pynput import keyboard
+import config
 
 
 # Plays FM radio through the computer audio output.
@@ -15,7 +16,7 @@ from pynput import keyboard
 faulthandler.enable()
 exitFlag = multiprocessing.Event()  # set flag to exit by pressing ESC
 sample_queue = multiprocessing.Queue()  # samples added to the queue for processing
-audio_queue = multiprocessing.Queue()  # audio added to the queue to be played
+audio_queues = [multiprocessing.Queue() for _ in config.CHANNELS]  # audio added to the queue to be played
 
 
 # Handles sampling, processing, and playing from an SDR
@@ -26,24 +27,18 @@ audio_queue = multiprocessing.Queue()  # audio added to the queue to be played
 #   # sdr listening frequency
 #   # sdr tuning offset
 #   # buffer time
-class Radio():    
-    def __init__(self, f_sps=1.0*256*256*16, f_audiosps=48000, f_c=94.9e6, f_offset=250e3, buffer_time=1.0):
+class Radio:
+    def __init__(self, f_sps=1.0*256*256*16, f_audiosps=48000, f_c=config.CHANNELS[0], buffer_time=config.BUFFER_TIME):
         # set up constants
         self.f_sps = f_sps  # sdr sampling frequency
         self.f_audiosps = f_audiosps  # audio sampling frequency (for output)
         self.f_c = f_c  # listening frequency
-        self.f_offset = int(f_offset)  # default offset by 250 Khz to avoid sdr center spike
-        self.dt = 1.0 / self.f_sps  # time step size between samples
-        self.nyquist = self.f_sps / 2.0  # nyquist frequency based on sample rate
         self.buffer_time = buffer_time  # length in seconds of samples in each buffer
         self.N = round(self.f_sps*self.buffer_time)  # number of samples to collect per buffer
 
-        # initialize SDR
-        self.sdr = RtlSdr()
-
         # initialize multiprocessing processes
-        self.sample_process = SampleProcess(self.sdr, self.f_sps, self.f_c, self.f_offset, self.N)
-        self.extraction_process = ExtractionProcess(self.f_sps, self.f_offset, self.f_audiosps)
+        self.sample_process = SampleProcess(self.f_sps, self.f_c, self.N, sample_queue)
+        self.extraction_process = ExtractionProcess(self.f_sps, self.f_audiosps, sample_queue, audio_queues)
         self.exit_listener = keyboard.Listener(on_press=self.on_press)
 
         # initalize output audio stream
@@ -60,16 +55,21 @@ class Radio():
 
         # audio playing in the main process
         while not exitFlag.is_set():
-            audio = audio_queue.get(block=True)
-            audio = audio.astype(np.float32)
+            for audio_queue in audio_queues:
+                try:
+                    audio = audio_queue.get(block=False)
+                except queue.Empty:
+                    continue
+                audio = audio.astype(np.float32)
 
-            # play audio and send to output queue if it's not full
-            try:
-                self.output_queue.put(audio, block=False)
-            except queue.Full:
-                pass
+                # play audio and send to output queue if it's not full
+                try:
+                    self.output_queue.put(audio, block=False)
+                except queue.Full:
+                    pass
 
-            self.stream.write(3 * audio)
+                self.stream.write(config.VOLUME * audio)
+            time.sleep(config.BUFFER_TIME / 2)
 
     def cleanup(self):
         time.sleep(self.buffer_time)  # wait to allow processes to finish
@@ -89,27 +89,27 @@ class Radio():
 
 # Process to sample radio using the sdr
 class SampleProcess(multiprocessing.Process):
-    def __init__(self, sdr, f_sps, f_c, f_offset, buffer_length):
+    def __init__(self, f_sps, f_c, buffer_length, sample_queue):
         multiprocessing.Process.__init__(self)
-        self.sdr = sdr
         self.f_sps = f_sps
         self.f_c = f_c
-        self.f_offset = f_offset
         self.buffer_length = buffer_length
+        self.sample_queue = sample_queue
 
     def run(self):
-        asyncio.run(self.stream_samples(self.sdr, self.buffer_length, self.f_sps, self.f_c, self.f_offset))
+        asyncio.run(self.stream_samples(self.buffer_length, self.f_sps, self.f_c))
 
-
-    async def stream_samples(self, sdr, N, f_sps, f_c, f_offset):
+    async def stream_samples(self, N, f_sps, f_c):
+        # initialize SDR
+        sdr = RtlSdr()
         sdr.sample_rate = f_sps
-        sdr.center_freq = f_c + f_offset
+        sdr.center_freq = f_c + config.F_OFFSET
         sdr.gain = -1.0  # increase for receiving weaker signals. valid gains (dB): -1.0, 1.5, 4.0, 6.5, 9.0, 11.5, 14.0, 16.5, 19.0, 21.5, 24.0, 29.0, 34.0, 42.0
         samples = np.array([], dtype=np.complex64)
         async for sample_set in sdr.stream():  # streams 131072 samples at a time
             samples = np.concatenate((samples, sample_set))
             if len(samples) >= N:
-                sample_queue.put(samples)
+                self.sample_queue.put(samples)
                 samples = np.array([], dtype=np.complex64)
             
             if exitFlag.is_set():
@@ -118,34 +118,44 @@ class SampleProcess(multiprocessing.Process):
 
 # Process to extract audio from the samples
 class ExtractionProcess(multiprocessing.Process):
-    def __init__(self, f_sps, f_offset, f_audiosps):
+    def __init__(self, f_sps, f_audiosps, sample_queue, audio_queues):
         multiprocessing.Process.__init__(self)
         self.f_sps = f_sps
-        self.f_offset = f_offset
         self.f_audiosps = f_audiosps
+        self.shift_operators = None
+        self.firtaps = signal.firwin(config.FILTER_WINDOW, cutoff=config.F_BANDWIDTH,
+                                     fs=f_sps, window='hamming')
+        self.sample_queue = sample_queue
+        self.audio_queues = audio_queues
 
     def run(self):
         while not exitFlag.is_set():
-            samples = sample_queue.get(block=True)
-            filteredsignal = self.filter_samples(samples, self.f_sps, self.f_offset)
-            audio = self.process_signal(filteredsignal, self.f_sps, self.f_audiosps)
-            audio_queue.put(audio)
+            samples = self.sample_queue.get(block=True)
+            filteredsignals = self.filter_samples(samples, self.f_sps)
+            audios = [self.process_signal(filteredsignal, self.f_sps, self.f_audiosps)
+                      for filteredsignal in filteredsignals]
+            for channel, (audio, filteredsignal) in enumerate(zip(audios, filteredsignals)):
+                power = np.mean(np.abs(filteredsignal))
+                print(channel, power)
+                if power > 0.1:
+                    self.audio_queues[channel].put(audio)
 
     # returns filtered signal
-    def filter_samples(self, samples, f_sps, f_offset):
-        f_bw = 100e3  # 100 KHz FM bandwidth
-        N = len(samples)
+    def filter_samples(self, samples, f_sps):
+        if self.shift_operators is None:
+            n = len(samples)
+            self.shift_operators = [
+                np.exp(1.0j * 2.0 * np.pi * -(channel - config.CHANNELS[0] - config.F_OFFSET) / f_sps * np.arange(n))
+                for channel in config.CHANNELS]
 
         # shift samples back to center frequency using complex exponential with period f_offset/f_sps
-        shift = np.exp(1.0j * 2.0 * np.pi * f_offset / f_sps * np.arange(N))
-        shifted_samples = samples * shift
+        shifted_samples = [samples * operator for operator in self.shift_operators]
 
         # filter samples to include only the FM bandwidth
-        k = 201  # number of filter taps - increase this to improve filter quality
-        firtaps = signal.firwin(k, cutoff=f_bw, fs=f_sps, window='hamming')
-        filteredsignal = np.convolve(firtaps, shifted_samples, mode='same')
+        filteredsignals = [np.convolve(self.firtaps, shifted_sample, mode='same')
+                           for shifted_sample in shifted_samples]
 
-        return filteredsignal
+        return filteredsignals
     
     # returns audio processed from filteredsignal
     def process_signal(self, filteredsignal, f_sps, f_audiosps):
@@ -170,5 +180,5 @@ class ExtractionProcess(multiprocessing.Process):
 
 
 if __name__ == '__main__':
-    r = Radio(buffer_time=2.5)
+    r = Radio(buffer_time=config.BUFFER_TIME)
     r.run()
