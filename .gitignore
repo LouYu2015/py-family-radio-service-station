@@ -3,3 +3,4 @@ pycache
 *.wav
 *.yml
 *.pyc
+.idea/
