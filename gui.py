@@ -9,6 +9,7 @@ class GUI:
         self.window = tk.Tk()
         self.window.bind("<Destroy>", self.on_destroy)
         self.channel_labels = []
+        self.channel_muted = [False] * len(config.CHANNELS)
         self.default_fg = None
         self.default_bg = None
         for i in range(len(config.CHANNELS)):
@@ -17,7 +18,7 @@ class GUI:
             self.default_fg = label.cget('fg')
             self.default_bg = label.cget('bg')
 
-            button = tk.Button(self.window, text="M")
+            button = tk.Button(self.window, text="M", command=self.mute_handler(i))
             button.grid(row=1, column=i)
 
             self.channel_labels.append(label)
@@ -31,6 +32,11 @@ class GUI:
             self.channel_labels[channel].configure(bg=self.default_bg, fg=self.default_fg)
         else:  # Muted
             self.channel_labels[channel].configure(bg=self.default_bg, fg="red")
+
+    def mute_handler(self, channel):
+        def handler():
+            self.channel_muted[channel] = not self.channel_muted[channel]
+        return handler
 
     def on_destroy(self, event):
         self.destroy_callback()

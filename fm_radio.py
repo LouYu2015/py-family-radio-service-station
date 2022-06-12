@@ -55,20 +55,36 @@ class Radio:
 
         self.current_channel = 0
         self.ui = gui.GUI(destroy_callback=self.cleanup)
+        self.no_signal_count = 2
         self.next_audio()
     
     def next_audio(self):
         audio = None
 
+        # Display channel status
         for channel, audio_queue in enumerate(audio_queues):
-            if audio_queue.empty():
+            if self.ui.channel_muted[channel]:
+                self.ui.set_channel_activity(channel, 'muted')
+                while not audio_queue.empty():
+                    audio_queue.get(block=False)
+            elif audio_queue.empty():
                 self.ui.set_channel_activity(channel, 'nothing')
             else:
                 self.ui.set_channel_activity(channel, 'waiting')
 
         try:
-            audio = audio_queues[self.current_channel].get(block=True, timeout=2 * config.BUFFER_TIME)
+            # Get current channel
+            audio = audio_queues[self.current_channel]\
+                .get(block=True, timeout=2 * config.BUFFER_TIME)
+            no_signal_count = 2
         except queue.Empty:
+            # Switch to another channel
+            self.no_signal_count -= 1
+            if self.no_signal_count > 0:
+                # Keep waiting for a while
+                self.ui.window.after(int(1000 * config.BUFFER_TIME / 2), self.next_audio)
+                return
+
             for channel, audio_queue in enumerate(audio_queues):
                 try:
                     audio = audio_queue.get(block=False)
@@ -76,6 +92,7 @@ class Radio:
                 except queue.Empty:
                     pass
             if audio is None:
+                # No channel has audio
                 self.ui.window.after(int(1000 * config.BUFFER_TIME / 2), self.next_audio)
                 return
         audio = audio.astype(np.float32)
