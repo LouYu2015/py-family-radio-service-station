@@ -1,12 +1,12 @@
-# Channels to listen
+# Channel frequencies (Hz) to listen
 CHANNELS = [462.625e6, 462.725e6]
-# Offset the center frequency to avoid the spike in center frequency
+# Offset the center frequency (Hz) to avoid the spike in center frequency
 F_OFFSET = 250e3
-# Window size of the frequency filter
+# Window size of the frequency filter (number of samples)
 FILTER_WINDOW = 201
-# Bandwidth of each channel
+# Bandwidth of each channel (Hz)
 F_BANDWIDTH = 12.5e3
-# Buffer time per audio block
+# Buffer time per audio block (seconds)
 BUFFER_TIME = 0.1
 # Wait for SIGNAL_WAIT_TIME * BUFFER_TIME of silence before switching channels
 SIGNAL_WAIT_TIME = 2
