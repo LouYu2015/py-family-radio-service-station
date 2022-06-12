@@ -6,7 +6,7 @@ It is based on the code from [Kavel Rao ](https://github.com/kavelrao/fm-streami
 
 # Set Up
 
-See `requirements.txt` for the required python packages. You might also need to install `librtlsdr` in addition to the pyton packages.
+See `requirements.txt` for the required python packages. You might also need to install `librtlsdr` in addition to the python packages.
 
 # Usage
 
