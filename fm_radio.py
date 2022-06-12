@@ -11,26 +11,22 @@ import config
 import gui
 
 
-# Plays FM radio through the computer audio output.
+# Plays Family Radio Service signal in real-time
 
 faulthandler.enable()
-exitFlag = multiprocessing.Event()  # set flag to exit by pressing ESC
+exitFlag = multiprocessing.Event()  # set flag to exit by closing the window
 sample_queue = multiprocessing.Queue()  # samples added to the queue for processing
 audio_queues = [multiprocessing.Queue() for _ in config.CHANNELS]  # audio added to the queue to be played
 
 
 # Handles sampling, processing, and playing from an SDR
-# Outputs audio samples to Radio.output_queue for potential use by other programs
 # Optional contructor arguments:
-#   # sdr sampling rate, must be a multiple of 256
-#   # audio sampling rate
-#   # sdr listening frequency
-#   # sdr tuning offset
-#   # buffer time
+#   f_sps: sdr sampling rate (Hz), must be a multiple of 256
+#   f_audiosps: output audio sampling rate (Hz)
+#   f_c: sdr listening frequency (Hz)
+#   buffer_time: buffer time for each audio block (seconds)
 class Radio:
     def __init__(self, f_sps=1.0*256*256*16, f_audiosps=48000, f_c=config.CHANNELS[0], buffer_time=config.BUFFER_TIME):
-        self.ui = None
-
         # set up constants
         self.f_sps = f_sps  # sdr sampling frequency
         self.f_audiosps = f_audiosps  # audio sampling frequency (for output)
@@ -43,28 +39,31 @@ class Radio:
         self.extraction_process = ExtractionProcess(exitFlag, self.f_sps, self.f_audiosps, sample_queue, audio_queues)
 
         # initalize output audio stream
-        self.stream = sd.OutputStream(samplerate=self.f_audiosps, blocksize=int(self.N / (self.f_sps / self.f_audiosps)), channels=1)
+        self.stream = sd.OutputStream(samplerate=self.f_audiosps,
+                                      blocksize=int(self.N / (self.f_sps / self.f_audiosps)),
+                                      channels=1)
 
         self.output_queue = multiprocessing.Queue(25)  # for other programs to use audio samples. max size is 25 to avoid memory overuse if output is not being used.
 
         print('\nInitialized. Starting streaming. Press <ESC> to exit.\n')
         self.stream.start()
-        # self.exit_listener.start()
         self.sample_process.start()
         self.extraction_process.start()
 
-        self.current_channel = 0
         self.ui = gui.GUI(destroy_callback=self.cleanup)
-        self.no_signal_count = 2
-        self.next_audio()
+        self.current_channel = 0  # channel number that we currently monitor
+        self.switch_channel_countdown = config.SIGNAL_WAIT_TIME  # switch channels if silenced for a long time
+        self.next_audio_block()
     
-    def next_audio(self):
+    def next_audio_block(self):
         audio = None
 
         # Display channel status
         for channel, audio_queue in enumerate(audio_queues):
             if self.ui.channel_muted[channel]:
                 self.ui.set_channel_activity(channel, 'muted')
+
+                # Discard audio
                 while not audio_queue.empty():
                     audio_queue.get(block=False)
             elif audio_queue.empty():
@@ -75,14 +74,14 @@ class Radio:
         try:
             # Get current channel
             audio = audio_queues[self.current_channel]\
-                .get(block=True, timeout=2 * config.BUFFER_TIME)
-            no_signal_count = 2
+                .get(block=False)
+            self.switch_channel_countdown = config.SIGNAL_WAIT_TIME
         except queue.Empty:
             # Switch to another channel
-            self.no_signal_count -= 1
-            if self.no_signal_count > 0:
+            self.switch_channel_countdown -= 1
+            if self.switch_channel_countdown > 0:
                 # Keep waiting for a while
-                self.ui.window.after(int(1000 * config.BUFFER_TIME / 2), self.next_audio)
+                self.ui.window.after(int(1000 * config.BUFFER_TIME / 2), self.next_audio_block)
                 return
 
             for channel, audio_queue in enumerate(audio_queues):
@@ -93,7 +92,7 @@ class Radio:
                     pass
             if audio is None:
                 # No channel has audio
-                self.ui.window.after(int(1000 * config.BUFFER_TIME / 2), self.next_audio)
+                self.ui.window.after(int(1000 * config.BUFFER_TIME / 2), self.next_audio_block)
                 return
         audio = audio.astype(np.float32)
 
@@ -105,7 +104,7 @@ class Radio:
             pass
 
         self.stream.write(config.VOLUME * audio)
-        self.ui.window.after(int(1000 * config.BUFFER_TIME), self.next_audio)
+        self.ui.window.after(int(1000 * config.BUFFER_TIME), self.next_audio_block)
 
     def cleanup(self):
         time.sleep(self.buffer_time)  # wait to allow processes to finish
@@ -118,11 +117,6 @@ class Radio:
             audio_queue.close()
         self.stream.stop()
         self.stream.close()
-
-    # def on_press(self, key):
-    #     if key == keyboard.Key.esc:
-    #         exitFlag.set()
-    #         self.cleanup()
 
 
 # Process to sample radio using the sdr
@@ -185,13 +179,13 @@ class ExtractionProcess(multiprocessing.Process):
 
     # returns filtered signal
     def filter_samples(self, samples, f_sps):
+        # shift samples back to center frequency using complex exponential with period f_offset/f_sps
         if self.shift_operators is None:
             n = len(samples)
+            # keep a cache of the operators
             self.shift_operators = [
                 np.exp(1.0j * 2.0 * np.pi * -(channel - config.CHANNELS[0] - config.F_OFFSET) / f_sps * np.arange(n))
                 for channel in config.CHANNELS]
-
-        # shift samples back to center frequency using complex exponential with period f_offset/f_sps
         shifted_samples = [samples * operator for operator in self.shift_operators]
 
         # filter samples to include only the FM bandwidth

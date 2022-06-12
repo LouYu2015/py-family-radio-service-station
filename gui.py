@@ -4,6 +4,7 @@ import config
 
 class GUI:
     def __init__(self, destroy_callback):
+        # destroy_callback will be called when the window is closed
         self.destroy_callback = destroy_callback
 
         self.window = tk.Tk()
@@ -46,4 +47,5 @@ class GUI:
 
 
 if __name__ == "__main__":
-    GUI().mainloop()
+    # Test UI
+    GUI(destroy_callback=lambda: None).mainloop()

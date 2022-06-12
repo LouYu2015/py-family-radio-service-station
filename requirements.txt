@@ -2,7 +2,3 @@ pyrtlsdr
 numpy
 scipy
 sounddevice
-pynput
-torch
-omegaconf
-torchaudio
