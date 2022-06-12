@@ -1,9 +1,26 @@
-# FM Streaming
+# Family Radio Service (FRS) Station
 
-This is the code from a project for CSE 490 W at the University of Washington, taught by Professor Joshua Smith in Spring of 2021. The class topic is wireless communication, with a software focus. Through the class, we had access to Software Defined Radio (SDR) devices, which can be used to capture signals in frequency ranges from 55 MHz to 2.3 GHz. In class, we explored FM demodulation using the SDR by capturing a short 2.5 second sample, demodulating it, and playing the audio clip through the computer's speakers. This project is a significant extension of that concept.
+This is the code from a project for CSE 490 W at the University of Washington, taught by Professor Joshua Smith in Spring of 2022.
 
-The goal of this project is to create a program that streams an FM signal from a software defined radio (SDR), demodulates the signal, plays back the audio, and outputs captions all in real time. The primary goal of the project is the streaming FM radio player, and the captioning is an additional objective.
+It is based on the code from [Kavel Rao ](https://github.com/kavelrao/fm-streaming).
 
-If you have an SDR that is compatible with the python `rtlsdr` library, you can run `fm_radio.py` for a streaming radio and `fm_captions.py` for the same radio + captions printed in stdout.
+# Set Up
 
-More details on the project can be found in my extensive writeup [here](https://kavelrao.dev/assets/files/fm_radio_report.pdf).
+See `requirements.txt` for the required python packages. You might also need to install `librtlsdr` in addition to the pyton packages.
+
+# Usage
+
+If you have an SDR that is compatible with the python `rtlsdr` library, you can run `fm_radio.py` to monitor FRS channels. You can set the configuration in `config.py`.
+
+![](screenshot.png)
+
+Above is a screenshot of the UI. Each channel has 4 possible states:
+
+* Active: the audio is playing in the speaker. (Shown as green background)
+* Waiting: the audio is delayed to avoid overlapping with the active channel. The sound will play back later. (Shown as yellow background)
+* Nothing: there’s no audio detected on this channel. (Shown as no background)
+* Muted: the voice on this channel should be ignored. (Shown as red foreground)
+
+Click the button below each channel to mute or un-mute a channel.
+
+More details on the project can be found in my writeup [here](final_report.pdf).
